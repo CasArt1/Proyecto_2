@@ -1,0 +1,70 @@
+{
+  "best_params": {
+    "rsi_period": 19,
+    "stoch_k_period": 10,
+    "stoch_d_period": 5,
+    "stoch_smooth_k": 3,
+    "bb_period": 25,
+    "bb_num_std": 1.7783951468208858,
+    "macd_fast": 12,
+    "macd_slow": 31,
+    "macd_signal": 8,
+    "sma_period": 176,
+    "use_macd_filter": false,
+    "use_sma_filter": false,
+    "bb_width_min": 0.00773493122518327,
+    "use_percentiles": false,
+    "rsi_buy_below": 36.661723793611344,
+    "rsi_sell_above": 73.149617330777,
+    "stoch_buy_below": 26.28972463852664,
+    "stoch_sell_above": 84.99097982882161,
+    "bb_buy_below": -0.012845800327109481,
+    "bb_sell_above": 0.9844714233184445,
+    "roll_window": 362,
+    "rsi_low_q": 0.17790610231424478,
+    "rsi_high_q": 0.7016989663457153,
+    "stoch_low_q": 0.28017450738213795,
+    "stoch_high_q": 0.8160082758252554,
+    "bb_low_q": 0.1825866437063186,
+    "bb_high_q": 0.7434329998864571,
+    "vol_window": 26,
+    "vol_max": 0.04314761845035623,
+    "min_hold_bars": 2,
+    "cooldown_bars": 1,
+    "session_start": 22,
+    "session_length": 21,
+    "trade_weekends": true,
+    "long_sl_pct": 0.019357123761370516,
+    "long_tp_pct": 0.04993663043107294,
+    "short_sl_pct": 0.012970600596244867,
+    "short_tp_pct": 0.02698338998640183,
+    "max_short_pct": 0.05014731450616401
+  },
+  "best_calmar_train": 0.884788310244968,
+  "metrics": {
+    "train": {
+      "sharpe": -0.08132274128930066,
+      "sortino": -0.04594279543700172,
+      "calmar": -0.17438592025984503,
+      "max_drawdown": -0.4576361709157334,
+      "win_rate": 0.31735537190082647,
+      "trades": 605
+    },
+    "test": {
+      "sharpe": -1.0249958332869404,
+      "sortino": -0.9546599211455938,
+      "calmar": -0.7251093274820578,
+      "max_drawdown": -0.4394961408221039,
+      "win_rate": 0.3819241982507289,
+      "trades": 343
+    },
+    "validation": {
+      "sharpe": -0.552224255358894,
+      "sortino": -0.5544026924220337,
+      "calmar": -0.4485770969656331,
+      "max_drawdown": -0.4340632434730733,
+      "win_rate": 0.3786407766990291,
+      "trades": 309
+    }
+  }
+}
