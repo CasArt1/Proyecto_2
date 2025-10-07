@@ -53,6 +53,16 @@ BACKTEST = {
 }
 
 OPTIMIZER = {
-    "n_trials": 100,
+    "n_trials": 200,
     "seed": 42,
+
+    # ---- toggle this ----
+    "use_cv": False,     # False = single-split optimizer; True = 3-fold walk-forward CV
+    "cv_folds": 3,
+
+    # guards
+    "min_trades": 60,        # single-split (No-CV) minimum trades on TRAIN
+    "min_trades_fold": 40,   # per-fold minimum trades (CV)
+    "max_trades_fold": 4000  # per-fold max (avoid churn)
 }
+
