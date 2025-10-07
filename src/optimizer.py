@@ -1,3 +1,4 @@
+# src/optimizer.py
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List
 import numpy as np
@@ -7,9 +8,7 @@ from .indicators import add_indicators
 from .signals import generate_signals
 from .backtest import backtest, BacktestConfig
 from .metrics import compute_all_metrics, annual_return
-from config import OPTIMIZER  # <-- read flags from config
-
-# ------------- shared helpers -------------
+from config import OPTIMIZER
 
 def _features_and_signals(df, p):
     df = add_indicators(
@@ -43,7 +42,8 @@ def _features_and_signals(df, p):
     return df
 
 def _bt_cfg_from(base: BacktestConfig, p: dict) -> BacktestConfig:
-    return BacktestConfig(
+    # Build with only the fields we KNOW exist, then try set optional ones if present.
+    cfg = BacktestConfig(
         signal_shift=1,
         long_sl_pct=p.get("long_sl_pct", base.long_sl_pct),
         long_tp_pct=p.get("long_tp_pct", base.long_tp_pct),
@@ -55,17 +55,15 @@ def _bt_cfg_from(base: BacktestConfig, p: dict) -> BacktestConfig:
         fee_rate=base.fee_rate,
         max_long_pct=base.max_long_pct,
         max_short_pct=p.get("max_short_pct", base.max_short_pct),
-        min_hold_bars=p.get("min_hold_bars", 1),
-        cooldown_bars=p.get("cooldown_bars", 0),
-        vol_window=p.get("vol_window", 48),
-        vol_max=p.get("vol_max", 0.02),
-        session_start=p.get("session_start", 0),
-        session_length=p.get("session_length", 24),
-        trade_weekends=p.get("trade_weekends", True),
     )
+    # Optional knobs: set only if BacktestConfig actually has them
+    for k in ["min_hold_bars","cooldown_bars","vol_window","vol_max",
+              "session_start","session_length","trade_weekends"]:
+        if hasattr(cfg, k) and (k in p):
+            setattr(cfg, k, p[k])
+    return cfg
 
 def _suggest_params(trial: optuna.Trial) -> Dict[str, Any]:
-    # Indicators (lean a bit toward more signals on 1h)
     rsi_period = trial.suggest_int("rsi_period", 5, 20)
     st_k       = trial.suggest_int("stoch_k_period", 5, 20)
     st_d       = trial.suggest_int("stoch_d_period", 2, 5)
@@ -73,16 +71,14 @@ def _suggest_params(trial: optuna.Trial) -> Dict[str, Any]:
     bb_period  = trial.suggest_int("bb_period", 10, 40)
     bb_std     = trial.suggest_float("bb_num_std", 1.6, 2.6)
 
-    # Regime + filters
     macd_fast   = trial.suggest_int("macd_fast", 8, 16)
     macd_slow   = trial.suggest_int("macd_slow", 20, 32)
     macd_signal = trial.suggest_int("macd_signal", 5, 10)
     sma_period  = trial.suggest_int("sma_period", 120, 300)
-    use_macd_f  = trial.suggest_categorical("use_macd_filter", [False, False, True])  # bias OFF
-    use_sma_f   = trial.suggest_categorical("use_sma_filter",  [False, False, True])  # bias OFF
+    use_macd_f  = trial.suggest_categorical("use_macd_filter", [False, False, True])
+    use_sma_f   = trial.suggest_categorical("use_sma_filter",  [False, False, True])
     bb_width_min= trial.suggest_float("bb_width_min", 0.00, 0.012)
 
-    # Threshold style
     use_pcts   = trial.suggest_categorical("use_percentiles", [True, False])
     rsi_buy    = trial.suggest_float("rsi_buy_below", 20.0, 40.0)
     rsi_sell   = trial.suggest_float("rsi_sell_above", 60.0, 80.0)
@@ -99,19 +95,15 @@ def _suggest_params(trial: optuna.Trial) -> Dict[str, Any]:
     bb_low_q   = trial.suggest_float("bb_low_q",    0.15, 0.35)
     bb_high_q  = trial.suggest_float("bb_high_q",   0.65, 0.85)
 
-    # Churn/vol
-    confirm_bars = 1
     vol_win      = trial.suggest_int("vol_window", 12, 48)
     vol_max      = trial.suggest_float("vol_max", 0.02, 0.06)
     min_hold     = trial.suggest_int("min_hold_bars", 1, 2)
     cooldown     = trial.suggest_int("cooldown_bars", 0, 1)
 
-    # Session (loose)
     session_start  = trial.suggest_int("session_start", 0, 23)
     session_length = trial.suggest_int("session_length", 18, 24)
     trade_weekends = trial.suggest_categorical("trade_weekends", [True])
 
-    # Risk & sizing
     long_sl   = trial.suggest_float("long_sl_pct", 0.0075, 0.02)
     long_tp   = trial.suggest_float("long_tp_pct", 0.0125, 0.05)
     short_sl  = trial.suggest_float("short_sl_pct", 0.0075, 0.02)
@@ -133,7 +125,7 @@ def _suggest_params(trial: optuna.Trial) -> Dict[str, Any]:
         rsi_low_q=rsi_low_q, rsi_high_q=rsi_high_q,
         stoch_low_q=st_low_q, stoch_high_q=st_high_q,
         bb_low_q=bb_low_q, bb_high_q=bb_high_q,
-        confirm_bars=confirm_bars,
+        confirm_bars=1,
         vol_window=vol_win, vol_max=vol_max,
         min_hold_bars=min_hold, cooldown_bars=cooldown,
         session_start=session_start, session_length=session_length, trade_weekends=trade_weekends,
@@ -143,12 +135,18 @@ def _suggest_params(trial: optuna.Trial) -> Dict[str, Any]:
         max_short_pct=max_short_pct,
     )
 
-# ------------- No-CV objective -------------
+def _split_folds(n: int, k: int) -> List[slice]:
+    base, rem = n // k, n % k
+    i, folds = 0, []
+    for j in range(k):
+        step = base + (1 if j < rem else 0)
+        folds.append(slice(i, i + step))
+        i += step
+    return folds
 
 def _objective_single(train_df, base_bt_cfg: BacktestConfig):
     MIN_TRADES = OPTIMIZER.get("min_trades", 60)
     MAX_TRADES = OPTIMIZER.get("max_trades", 4000)
-
     def objective(trial: optuna.Trial) -> float:
         P = _suggest_params(trial)
         df = _features_and_signals(train_df.copy(), P)
@@ -165,31 +163,16 @@ def _objective_single(train_df, base_bt_cfg: BacktestConfig):
         return float(calmar)
     return objective
 
-# ------------- CV objective (walk-forward) -------------
-
-def _split_folds(n: int, k: int) -> List[slice]:
-    base = n // k
-    rem = n % k
-    idx = 0
-    folds = []
-    for i in range(k):
-        step = base + (1 if i < rem else 0)
-        folds.append(slice(idx, idx + step))
-        idx += step
-    return folds
-
 def _objective_cv(train_df, base_bt_cfg: BacktestConfig):
     K = OPTIMIZER.get("cv_folds", 3)
     MIN_TR = OPTIMIZER.get("min_trades_fold", 40)
     MAX_TR = OPTIMIZER.get("max_trades_fold", 4000)
-
     def objective(trial: optuna.Trial) -> float:
         P = _suggest_params(trial)
         n = len(train_df)
         if n < 600:
             return -1e9
         calmars = []
-        cagrs = []
         for sl in _split_folds(n, K):
             sub = train_df.iloc[sl]
             if len(sub) < 500:
@@ -206,13 +189,10 @@ def _objective_cv(train_df, base_bt_cfg: BacktestConfig):
             if cagr <= 0:
                 return -1e9
             calmars.append(float(calmar))
-            cagrs.append(float(cagr))
         if not calmars:
             return -1e9
         return float(np.median(calmars))
     return objective
-
-# ------------- runner -------------
 
 def run_optimization(train_df, base_bt_cfg: BacktestConfig, n_trials=200, seed=42) -> Tuple[Dict[str, Any], float]:
     sampler = optuna.samplers.TPESampler(seed=seed)
@@ -220,3 +200,4 @@ def run_optimization(train_df, base_bt_cfg: BacktestConfig, n_trials=200, seed=4
     obj = _objective_cv(train_df, base_bt_cfg) if OPTIMIZER.get("use_cv", False) else _objective_single(train_df, base_bt_cfg)
     study.optimize(obj, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
     return study.best_params, float(study.best_value)
+

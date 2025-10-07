@@ -3,7 +3,7 @@ import json
 import pandas as pd
 
 from config import (
-    PROJECT_ROOT, DATA_DIR, FIGURES_DIR, CSV_FILE, SPLIT_RATIOS,
+    PROJECT_ROOT, DATA_DIR, RESULTS_DIR, FIGURES_DIR, CSV_FILE, SPLIT_RATIOS,
     INDICATORS, SIGNALS, PORTFOLIO, BACKTEST, OPTIMIZER
 )
 from src.data_loader import load_and_preprocess_data
@@ -13,8 +13,12 @@ from src.backtest import backtest, BacktestConfig
 from src.optimizer import run_optimization
 from src.metrics import compute_all_metrics
 from src.visualization import (
-    plot_equity_curve, plot_cumulative_returns, plot_drawdown, plot_monthly_returns_heatmap
+    plot_equity_curve, plot_cumulative_returns, plot_drawdown
 )
+
+# ----- label outputs based on the optimizer toggle -----
+RUN_LABEL = "cv" if OPTIMIZER.get("use_cv", False) else "no_cv"
+
 
 def _prepare_df(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """Add indicators + signals using *optimized* params (with robust fallbacks)."""
@@ -61,21 +65,34 @@ def _prepare_df(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     )
     return out
 
+
 def _run_split(name: str, df: pd.DataFrame, bt_cfg: BacktestConfig, fig_dir: Path):
     p, hist = backtest(df, bt_cfg)
     metrics = compute_all_metrics(hist, p.trade_log)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    plot_equity_curve(hist, p.trade_log, fig_dir)
+
+    # Equity: your visualization.py uses (hist, trades, out_dir)
+    try:
+        plot_equity_curve(hist, None, fig_dir)   # <= pass trades=None
+    except TypeError:
+        # fallback if you later standardize to (hist, out_dir)
+        plot_equity_curve(hist, fig_dir)
+
+    # These usually take (hist, out_dir). If yours differs, mirror the try/fallback pattern.
     plot_cumulative_returns(hist, fig_dir)
     plot_drawdown(hist, fig_dir)
-    plot_monthly_returns_heatmap(hist, fig_dir)
+    # (heatmap omitted)
+
     return metrics
+
+
+
 
 def main():
     csv_path = DATA_DIR / CSV_FILE
     train, test, val = load_and_preprocess_data(csv_path, SPLIT_RATIOS)
 
-    # base config used for optimizer; session args will be set inside objective
+    # base config used for optimizer; session/vol knobs kept here if your BacktestConfig supports them
     base_bt_cfg = BacktestConfig(
         signal_shift=BACKTEST["signal_shift"],
         long_sl_pct=BACKTEST["long_sl_pct"], long_tp_pct=BACKTEST["long_tp_pct"],
@@ -86,12 +103,15 @@ def main():
         fee_rate=PORTFOLIO["fee_rate"],
         max_long_pct=PORTFOLIO["max_long_pct"],
         max_short_pct=PORTFOLIO["max_short_pct"],
+        # Keep these only if your BacktestConfig supports them:
         min_hold_bars=1, cooldown_bars=0, vol_window=48, vol_max=0.02,
         session_start=0, session_length=24, trade_weekends=True,
     )
 
     # === Optimize on TRAIN ===
-    best_params, best_val = run_optimization(train, base_bt_cfg, OPTIMIZER["n_trials"], OPTIMIZER["seed"])
+    best_params, best_val = run_optimization(
+        train, base_bt_cfg, OPTIMIZER["n_trials"], OPTIMIZER["seed"]
+    )
     params = {**INDICATORS, **SIGNALS, **best_params}
 
     # Prepare all splits with the SAME signal logic the optimizer saw
@@ -99,7 +119,7 @@ def main():
     test_df  = _prepare_df(test.copy(),  params)
     val_df   = _prepare_df(val.copy(),   params)
 
-    # Backtest settings must ALSO mirror optimizer (including session args!)
+    # Backtest settings must ALSO mirror optimizer (including session args if present)
     bt_cfg = BacktestConfig(
         signal_shift=1,
         long_sl_pct=params.get("long_sl_pct", base_bt_cfg.long_sl_pct),
@@ -112,29 +132,39 @@ def main():
         fee_rate=base_bt_cfg.fee_rate,
         max_long_pct=base_bt_cfg.max_long_pct,
         max_short_pct=params.get("max_short_pct", base_bt_cfg.max_short_pct),
-        min_hold_bars=params.get("min_hold_bars", 1),
-        cooldown_bars=params.get("cooldown_bars", 0),
-        vol_window=params.get("vol_window", 48),
-        vol_max=params.get("vol_max", 0.02),
-        # >>> critical: thread session args from best_params <<<
-        session_start=params.get("session_start", 0),
-        session_length=params.get("session_length", 24),
-        trade_weekends=params.get("trade_weekends", True),
+        # optional extras (only if BacktestConfig supports them)
+        min_hold_bars=params.get("min_hold_bars", getattr(base_bt_cfg, "min_hold_bars", 1)),
+        cooldown_bars=params.get("cooldown_bars", getattr(base_bt_cfg, "cooldown_bars", 0)),
+        vol_window=params.get("vol_window", getattr(base_bt_cfg, "vol_window", 48)),
+        vol_max=params.get("vol_max", getattr(base_bt_cfg, "vol_max", 0.02)),
+        session_start=params.get("session_start", getattr(base_bt_cfg, "session_start", 0)),
+        session_length=params.get("session_length", getattr(base_bt_cfg, "session_length", 24)),
+        trade_weekends=params.get("trade_weekends", getattr(base_bt_cfg, "trade_weekends", True)),
     )
 
     results = {}
+    # labeled figures directory: results/figures/<RUN_LABEL>/<split>/
+    base_fig_dir = FIGURES_DIR / RUN_LABEL
     for name, d in [("train", train_df), ("test", test_df), ("validation", val_df)]:
-        results[name] = _run_split(name, d, bt_cfg, FIGURES_DIR / name)
+        results[name] = _run_split(name, d, bt_cfg, base_fig_dir / name)
 
-    (PROJECT_ROOT / "results").mkdir(parents=True, exist_ok=True)
-    with open(PROJECT_ROOT / "results" / "summary.json", "w") as f:
-        json.dump({"best_params": best_params, "best_calmar_train": best_val, "metrics": results}, f, indent=2)
+    # labeled summary path: results/summary_<RUN_LABEL>.json
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    summary_path = RESULTS_DIR / f"summary_{RUN_LABEL}.json"
+    with open(summary_path, "w") as f:
+        json.dump(
+            {"best_params": best_params, "best_calmar_train": best_val, "metrics": results},
+            f, indent=2
+        )
 
     print("=== Best params ===")
     print(json.dumps(best_params, indent=2))
     print("\n=== Metrics ===")
     print(json.dumps(results, indent=2))
-    print("\nFigures ->", FIGURES_DIR)
+    print(f"\nSummary -> {summary_path}")
+    print("Figures ->", base_fig_dir)
+
 
 if __name__ == "__main__":
     main()
+
